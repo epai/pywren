@@ -49,8 +49,8 @@ class ResponseFuture(object):
     Object representing the result of a PyWren invocation. Returns the status of the
     execution and the result when available.
     """
-    GET_RESULT_SLEEP_SECS = 4
-    def __init__(self, call_id, callset_id, invoke_metadata, storage_path):
+    GET_RESULT_SLEEP_SECS = 1
+    def __init__(self, call_id, callset_id, invoke_metadata, storage_path, chunked):
 
         self.call_id = call_id
         self.callset_id = callset_id
@@ -68,6 +68,7 @@ class ResponseFuture(object):
         self.status_query_count = 0
 
         self.storage_path = storage_path
+        self.chunked = chunked
 
     def _set_state(self, new_state):
         ## FIXME add state machine

@@ -101,4 +101,11 @@ def get_all_results(fs):
       >>> results = get_all_results(futures)
     """
     wait(fs, return_when=ALL_COMPLETED)
-    return [f.result() for f in fs]
+    results = []
+    for f in fs:
+        result = f.result()
+        if f.chunked:
+            results.extend(result)
+        else:
+            results.append(result)
+    return results

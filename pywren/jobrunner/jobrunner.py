@@ -62,11 +62,13 @@ output_key = jobrunner_config['output_key']
 ## Jobrunner stats are fieldname float
 jobrunner_stats_filename = jobrunner_config['stats_filename']
 # open the stats filename
-stats_fid = open(jobrunner_stats_filename, 'w')
+# stats_fid = open(jobrunner_stats_filename, 'w')
+stats = {}
 
 def write_stat(stat, val):
-    stats_fid.write("{} {:f}\n".format(stat, val))
-    stats_fid.flush()
+    # stats_fid.write("{} {:f}\n".format(stat, val))
+    # stats_fid.flush()
+    stats[stat] = val
 
 try:
     func_download_time_t1 = time.time()
@@ -117,18 +119,31 @@ try:
     data_download_time_t1 = time.time()
     data_obj_stream = s3_client.get_object(Bucket=data_bucket,
                                            Key=data_key, **extra_get_args)
+
     # FIXME make this streaming
-    loaded_data = pickle.loads(data_obj_stream['Body'].read())
+    data = data_obj_stream['Body'].read()
+    if data_byte_range is not None:
+        loaded_data = pickle.loads(data)
+    else:
+        pickled_data = data.split(b'|||')
+        loaded_data = map(pickle.loads, pickled_data)
+
     data_download_time_t2 = time.time()
     write_stat('data_download_time',
                data_download_time_t2-data_download_time_t1)
 
-    #print("loaded")
-    y = loaded_func(loaded_data)
-    #print("success")
+    write_stat('load_time', data_download_time_t2 - func_download_time_t1)
+
+    if data_byte_range is not None:
+        y = loaded_func(loaded_data)
+    else:
+        y = [loaded_func(datum) for datum in loaded_data]
+
+    write_stat('done_time', time.time() - data_download_time_t2)
     output_dict = {'result' : y,
                    'success' : True,
-                   'sys.path' : sys.path}
+                   'sys.path' : sys.path,
+                   'stats': stats}
     pickled_output = pickle.dumps(output_dict)
 
 except Exception as e:

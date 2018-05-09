@@ -79,7 +79,7 @@ class Executor(object):
                          callset_id, call_id, extra_env,
                          extra_meta, data_byte_range, use_cached_runtime,
                          host_job_meta, job_max_runtime,
-                         overwrite_invoke_args=None):
+                         overwrite_invoke_args=None, chunked=False):
 
         # Pick a runtime url if we have shards.
         # If not the handler will construct it
@@ -143,7 +143,7 @@ class Executor(object):
         host_job_meta.update(arg_dict)
 
         storage_path = storage_utils.get_storage_path(self.storage_config)
-        fut = ResponseFuture(call_id, callset_id, host_job_meta, storage_path)
+        fut = ResponseFuture(call_id, callset_id, host_job_meta, storage_path, chunked)
 
         fut._set_state(JobState.invoked)
 
@@ -164,9 +164,9 @@ class Executor(object):
         return b"".join(data_strs), ranges
 
     def map(self, func, iterdata, extra_env=None, extra_meta=None,
-            invoke_pool_threads=64, data_all_as_one=True,
+            invoke_pool_threads=64, data_all_as_one=False,
             use_cached_runtime=True, overwrite_invoke_args=None,
-            exclude_modules=None):
+            exclude_modules=None, chunk_size=1):
         """
         :param func: the function to map over the data
         :param iterdata: An iterable of input data
@@ -236,10 +236,11 @@ class Executor(object):
 
         func_upload_time = time.time()
         func_key = create_func_key(self.storage.prefix, callset_id)
+
         self.storage.put_func(func_key, func_module_str)
         host_job_meta['func_upload_time'] = time.time() - func_upload_time
         host_job_meta['func_upload_timestamp'] = time.time()
-        def invoke(data_str, callset_id, call_id, func_key,
+        def invoke(data_strs, callset_id, call_id, func_key,
                    host_job_meta,
                    agg_data_key=None, data_byte_range=None):
             data_key, output_key, status_key \
@@ -249,15 +250,17 @@ class Executor(object):
 
             if agg_data_key is None:
                 data_upload_time = time.time()
-                self.put_data(data_key, data_str,
+                self.put_data(data_key, b'|||'.join(data_strs),
                               callset_id, call_id)
                 data_upload_time = time.time() - data_upload_time
                 host_job_meta['data_upload_time'] = data_upload_time
                 host_job_meta['data_upload_timestamp'] = time.time()
 
                 data_key = data_key
+                chunked = True
             else:
                 data_key = agg_data_key
+                chunked = False
 
             return self.invoke_with_keys(func_key, data_key,
                                          output_key,
@@ -266,18 +269,25 @@ class Executor(object):
                                          extra_meta, data_byte_range,
                                          use_cached_runtime, host_job_meta.copy(),
                                          self.job_max_runtime,
-                                         overwrite_invoke_args=overwrite_invoke_args)
+                                         overwrite_invoke_args=overwrite_invoke_args,
+                                         chunked=chunked)
 
         N = len(data)
         call_result_objs = []
-        for i in range(N):
+
+        if not agg_data_key and chunk_size > 1:
+            num_iters = range(0, N, chunk_size)
+        else:
+            num_iters = range(N)
+
+        for i in num_iters:
             call_id = "{:05d}".format(i)
 
             data_byte_range = None
             if agg_data_key is not None:
                 data_byte_range = agg_data_ranges[i]
 
-            cb = pool.apply_async(invoke, (data_strs[i], callset_id,
+            cb = pool.apply_async(invoke, (data_strs[i: i+chunk_size], callset_id,
                                            call_id, func_key,
                                            host_job_meta.copy(),
                                            agg_data_key,
