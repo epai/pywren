@@ -182,6 +182,20 @@ def get_server_info():
 
     return server_info
 
+
+def setup_runtime(s3_client, runtime_s3_bucket, runtime_s3_key, runtime_url, custom_handler_env):
+    if runtime_url:
+        # NOTE(shivaram): Right now we only support S3 urls.
+        runtime_s3_bucket, runtime_s3_key = wrenutil.split_s3_url(runtime_url)
+    delete_old_runtimes = custom_handler_env and custom_handler_env.get('delete_old_runtimes')
+    runtime_cached = download_runtime_if_necessary(s3_client, runtime_s3_bucket, runtime_s3_key, delete_old_runtimes)
+    logger.info("Runtime ready, cached={}".format(runtime_cached))
+    return dict(
+        runtime_s3_key_used=runtime_s3_key,
+        runtime_s3_bucket_used=runtime_s3_bucket,
+        runtime_cached=runtime_cached)
+
+
 def generic_handler(event, context_dict, custom_handler_env=None):
     """
     event is from the invoker, and contains job information
@@ -192,17 +206,38 @@ def generic_handler(event, context_dict, custom_handler_env=None):
     custom_handler_env are environment variables we should set
     based on the platform we are on.
     """
+
+
     pid = os.getpid()
 
     response_status = {'exception': None}
     try:
+        if version.__version__ != event['pywren_version']:
+            raise Exception("WRONGVERSION", "Pywren version mismatch",
+                            version.__version__, event['pywren_version'])
+
+        s3_client = boto3.client("s3")
+
+        start_time = time.time()
+        response_status['start_timestamp'] = start_time
+        logger.info("invocation started")
+
+        # RUNTIME HERE
+        setup_status = setup_runtime(s3_client=s3_client,
+            runtime_s3_bucket=event['runtime']['s3_bucket'],
+            runtime_s3_key=event['runtime']['s3_key'],
+            runtime_url=event['runtime_url'],
+            custom_handler_env=custom_handler_env)
+        response_status.update(setup_status)
+
+        if event.get('status') == 'warm':
+            logger.info('warmed!')
+            return
+
+        s3_bucket = event['storage_config']['backend_config']['bucket']
         if event['storage_config']['storage_backend'] != 's3':
             raise NotImplementedError(("Using {} as storage backend is not supported " +
                                        "yet.").format(event['storage_config']['storage_backend']))
-        s3_client = boto3.client("s3")
-        s3_bucket = event['storage_config']['backend_config']['bucket']
-
-        logger.info("invocation started")
 
         # download the input
         status_key = event['status_key']
@@ -211,22 +246,7 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         data_byte_range = event['data_byte_range']
         output_key = event['output_key']
 
-        if version.__version__ != event['pywren_version']:
-            raise Exception("WRONGVERSION", "Pywren version mismatch",
-                            version.__version__, event['pywren_version'])
-
-        start_time = time.time()
-        response_status['start_time'] = start_time
-
-        runtime_s3_bucket = event['runtime']['s3_bucket']
-        runtime_s3_key = event['runtime']['s3_key']
-        if event.get('runtime_url'):
-            # NOTE(shivaram): Right now we only support S3 urls.
-            runtime_s3_bucket_used, runtime_s3_key_used = wrenutil.split_s3_url(
-                event['runtime_url'])
-        else:
-            runtime_s3_bucket_used = runtime_s3_bucket
-            runtime_s3_key_used = runtime_s3_key
+        host_submit_timestamp = event['host_submit_timestamp']
 
         job_max_runtime = event.get("job_max_runtime", 290) # default for lambda
 
@@ -248,19 +268,6 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         free_disk_bytes = free_disk_space("/tmp")
         response_status['free_disk_bytes'] = free_disk_bytes
 
-        response_status['runtime_s3_key_used'] = runtime_s3_key_used
-        response_status['runtime_s3_bucket_used'] = runtime_s3_bucket_used
-        if (custom_handler_env != None):
-            delete_old_runtimes = custom_handler_env.get('delete_old_runtimes', False)
-        else:
-            delete_old_runtimes = False
-
-
-        runtime_cached = download_runtime_if_necessary(s3_client, runtime_s3_bucket_used,
-                                                       runtime_s3_key_used, delete_old_runtimes)
-        logger.info("Runtime ready, cached={}".format(runtime_cached))
-        response_status['runtime_cached'] = runtime_cached
-
         cwd = os.getcwd()
         jobrunner_path = os.path.join(cwd, "jobrunner.py")
 
@@ -271,8 +278,8 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         callset_id = event['callset_id']
         response_status['call_id'] = call_id
         response_status['callset_id'] = callset_id
-        runtime_meta = s3_client.head_object(Bucket=runtime_s3_bucket_used,
-                                             Key=runtime_s3_key_used)
+        runtime_meta = s3_client.head_object(Bucket=setup_status['runtime_s3_bucket_used'],
+                                             Key=setup_status['runtime_s3_key_used'])
         ETag = str(runtime_meta['ETag'])[1:-1]
         conda_runtime_dir = CONDA_RUNTIME_DIR.format(ETag)
         conda_python_path = conda_runtime_dir + "/bin"
@@ -291,7 +298,8 @@ def generic_handler(event, context_dict, custom_handler_env=None):
                             'python_module_path' : python_module_path,
                             'output_bucket' : s3_bucket,
                             'output_key' : output_key,
-                            'stats_filename' : jobrunner_stats_filename}
+                            'stats_filename' : jobrunner_stats_filename,
+                            'host_submit_timestamp' : host_submit_timestamp}
 
         with open(jobrunner_config_filename, 'w') as jobrunner_fid:
             json.dump(jobrunner_config, jobrunner_fid)
@@ -305,6 +313,7 @@ def generic_handler(event, context_dict, custom_handler_env=None):
 
         setup_time = time.time()
         response_status['setup_time'] = setup_time - start_time
+        response_status['setup_timestamp'] = setup_time
 
         local_env = os.environ.copy()
         if custom_handler_env is not None:
@@ -366,7 +375,7 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         response_status['exec_time'] = time.time() - setup_time
         response_status['end_time'] = end_time
 
-        response_status['host_submit_time'] = event['host_submit_time']
+        response_status['host_submit_timestamp'] = event['host_submit_timestamp']
         response_status['server_info'] = get_server_info()
 
         response_status.update(context_dict)
@@ -376,6 +385,7 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         response_status['exception_args'] = e.args
         response_status['exception_traceback'] = traceback.format_exc()
     finally:
-        # creating new client in case the client has not been created
-        boto3.client("s3").put_object(Bucket=s3_bucket, Key=status_key,
-                                      Body=json.dumps(response_status))
+        if event.get('status') != 'warm':
+            # creating new client in case the client has not been created
+            boto3.client("s3").put_object(Bucket=s3_bucket, Key=status_key,
+                                          Body=json.dumps(response_status))

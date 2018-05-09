@@ -144,6 +144,7 @@ class ResponseFuture(object):
             self.status_query_count += 1
         self._invoke_metadata['status_done_timestamp'] = time.time()
         self._invoke_metadata['status_query_count'] = self.status_query_count
+        self._invoke_metadata['status_done_time'] = self._invoke_metadata['status_done_timestamp'] - self._invoke_metadata['lambda_invoke_timestamp']
 
         self.run_status = call_status # this is the remote status information
         self.invoke_status = self._invoke_metadata # local status information
@@ -183,15 +184,19 @@ class ResponseFuture(object):
                                                                            self.call_id,
                                                                            call_success))
 
-
-
         self._call_invoker_result = call_invoker_result
 
-
+        self._invoke_metadata['done_timestamp'] = time.time()
 
         if call_success:
-
             self._return_val = call_invoker_result['result']
+
+            submit_ts = self._invoke_metadata['host_submit_timestamp']
+            start_ts = call_status['start_timestamp']
+            setup_ts = call_status['setup_timestamp']
+            done_ts = self._invoke_metadata['done_timestamp']
+            self.timestamps = [submit_ts, start_ts, setup_ts, done_ts]
+
             self._set_state(JobState.success)
             return self._return_val
 

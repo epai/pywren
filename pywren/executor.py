@@ -119,7 +119,7 @@ class Executor(object):
                 arg_dict[k] = v
 
         host_submit_time = time.time()
-        arg_dict['host_submit_time'] = host_submit_time
+        arg_dict['host_submit_timestamp'] = host_submit_time
 
         logger.info("call_async {} {} lambda invoke ".format(callset_id, call_id))
         lambda_invoke_time_start = time.time()
