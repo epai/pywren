@@ -29,7 +29,7 @@ ANY_COMPLETED = 2
 ALWAYS = 3
 
 def wait(fs, return_when=ALL_COMPLETED, THREADPOOL_SIZE=64,
-         WAIT_DUR_SEC=5):
+         WAIT_DUR_SEC=1):
     """
     Wait for the Future instances `fs` to complete. Returns a 2-tuple of
     lists. The first list contains the futures that completed

@@ -54,7 +54,7 @@ RUNTIME_DOWNLOAD_LOCK = "/tmp/runtime_download_lock"
 
 logger = logging.getLogger(__name__)
 
-PROCESS_STDOUT_SLEEP_SECS = 2
+PROCESS_STDOUT_SLEEP_SECS = 0.5
 
 def get_key_size(s3client, bucket, key):
     try:
