@@ -159,8 +159,13 @@ def create_role(ctx):
     iamclient = boto3.resource('iam')
     json_policy = json.dumps(pywren.wrenconfig.basic_role_policy)
     role_name = config['account']['aws_lambda_role']
-    iamclient.create_role(RoleName=role_name,
-                          AssumeRolePolicyDocument=json_policy)
+    try:
+        iamclient.create_role(RoleName=role_name,
+                              AssumeRolePolicyDocument=json_policy)
+    except botocore.exceptions.ClientError as e:
+        print('role already exists!')
+        return
+
     more_json_policy = json.dumps(pywren.wrenconfig.more_permissions_policy)
 
     AWS_ACCOUNT_ID = config['account']['aws_account_id']

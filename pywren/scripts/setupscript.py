@@ -84,7 +84,7 @@ def check_bucket_exists(s3bucket):
 
 def create_unique_bucket_name():
     bucket_name = "{}-pywren-{}".format(get_username().lower(),
-                                        random.randint(0, 999))
+                                        30)
     return bucket_name
 
 def check_valid_bucket_name(bucket_name):
@@ -219,8 +219,9 @@ def interactive_setup(ctx, dryrun, suffix):
         click.echo("Setting up standalone mode.")
         ctx.invoke(pywrencli.create_queue)
         ctx.invoke(pywrencli.create_instance_profile)
-    click.echo("Pausing for 10 sec for changes to propagate.")
-    time.sleep(10)
+    click.echo("Pausing for 5 sec for changes to propagate.")
+    time.sleep(5)
+    click.echo('invoking test function')
     ctx.invoke(pywrencli.test_function)
 
 if __name__ == '__main__':
