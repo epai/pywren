@@ -19,10 +19,12 @@ from __future__ import absolute_import
 import json
 import os
 import sys
+import time
 
-from multiprocessing.pool import ThreadPool
+from multiprocessing.pool import ThreadPool as Pool
 import pywren.runtime as runtime
 import random
+from functools import partial
 
 import botocore
 import botocore.session
@@ -36,6 +38,8 @@ else:
 SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+
+
 class LambdaInvoker(object):
     def __init__(self, region_name, lambda_function_name):
 
@@ -47,15 +51,41 @@ class LambdaInvoker(object):
                                                      region_name=region_name)
         self.TIME_LIMIT = True
 
+        self.queue = []
+        self.limit = 128
+
     def invoke(self, payload):
         """
         Invoke -- return information about this invocation
         """
+        self.queue.append(payload)
+        if len(self.queue) >= self.limit:
+            self.flush()
+        # FIXME check response
+        return {}
+
+    def _invoke(self, payload):
+        payload['host_submit_timestamp_2'] = time.time()
         self.lambclient.invoke(FunctionName=self.lambda_function_name,
                                Payload=json.dumps(payload),
                                InvocationType='Event')
-        # FIXME check response
-        return {}
+
+    def flush(self):
+
+        pid = os.fork()
+        print('flushing!')
+
+        if pid == 0: # child
+            with Pool(128) as pool:
+                for result in pool.imap_unordered(self._invoke, self.queue):
+                    # print('invoked!')
+                    pass
+                # self.lambclient.invoke(FunctionName=self.lambda_function_name,
+                #                        Payload=json.dumps(payload),
+                #                        InvocationType='Event')
+            os._exit(0) # kill the child
+
+        self.queue = []
 
     def config(self):
         """

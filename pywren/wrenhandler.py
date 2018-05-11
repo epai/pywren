@@ -73,14 +73,14 @@ def free_disk_space(dirname):
     s = os.statvfs(dirname)
     return s.f_bsize * s.f_bavail
 
-def download_runtime_if_necessary(s3_client, runtime_s3_bucket, runtime_s3_key,
-                                  delete_old_runtimes=False):
+def download_runtime_if_necessary(s3_client, runtime_s3_bucket, runtime_s3_key, delete_old_runtimes=False):
     """
     Download the runtime if necessary
 
     return True if cached, False if not (download occured)
 
     """
+    return True
 
     lock = open(RUNTIME_DOWNLOAD_LOCK, "a")
     fcntl.lockf(lock, fcntl.LOCK_EX)
@@ -188,7 +188,8 @@ def setup_runtime(s3_client, runtime_s3_bucket, runtime_s3_key, runtime_url, cus
         # NOTE(shivaram): Right now we only support S3 urls.
         runtime_s3_bucket, runtime_s3_key = wrenutil.split_s3_url(runtime_url)
     delete_old_runtimes = custom_handler_env and custom_handler_env.get('delete_old_runtimes')
-    runtime_cached = download_runtime_if_necessary(s3_client, runtime_s3_bucket, runtime_s3_key, delete_old_runtimes)
+    # runtime_cached = download_runtime_if_necessary(s3_client, runtime_s3_bucket, runtime_s3_key, delete_old_runtimes)
+    runtime_cached = True
     logger.info("Runtime ready, cached={}".format(runtime_cached))
     return dict(
         runtime_s3_key_used=runtime_s3_key,
@@ -215,7 +216,6 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         if version.__version__ != event['pywren_version']:
             raise Exception("WRONGVERSION", "Pywren version mismatch",
                             version.__version__, event['pywren_version'])
-
         s3_client = boto3.client("s3")
 
         start_time = time.time()
@@ -255,8 +255,10 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         response_status['output_key'] = output_key
         response_status['status_key'] = status_key
 
+        response_status['host_submit_timestamp_2'] = event['host_submit_timestamp_2']
+
         data_key_size = get_key_size(s3_client, s3_bucket, data_key)
-        #logger.info("bucket=", s3_bucket, "key=", data_key,  "status: ", data_key_size, "bytes" )
+        # logger.info("bucket=", s3_bucket, "key=", data_key,  "status: ", data_key_size, "bytes" )
         while data_key_size is None:
             logger.warning("WARNING COULD NOT GET FIRST KEY")
 
@@ -278,17 +280,19 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         callset_id = event['callset_id']
         response_status['call_id'] = call_id
         response_status['callset_id'] = callset_id
-        runtime_meta = s3_client.head_object(Bucket=setup_status['runtime_s3_bucket_used'],
-                                             Key=setup_status['runtime_s3_key_used'])
-        ETag = str(runtime_meta['ETag'])[1:-1]
-        conda_runtime_dir = CONDA_RUNTIME_DIR.format(ETag)
-        conda_python_path = conda_runtime_dir + "/bin"
-        conda_python_runtime = os.path.join(conda_python_path, "python")
+        # runtime_meta = s3_client.head_object(Bucket=setup_status['runtime_s3_bucket_used'],
+        #                                      Key=setup_status['runtime_s3_key_used'])
+        # ETag = str(runtime_meta['ETag'])[1:-1]
+        # conda_runtime_dir = CONDA_RUNTIME_DIR.format(ETag)
+        # conda_python_path = conda_runtime_dir + "/bin"
+        # conda_python_runtime = os.path.join(conda_python_path, "python")
 
-        # pass a full json blob
+        # # pass a full json blob
         jobrunner_config_filename = JOBRUNNER_CONFIG_FILENAME.format(pid)
         jobrunner_stats_filename = JOBRUNNER_STATS_FILENAME.format(pid)
         python_module_path = PYTHON_MODULE_PATH.format(pid)
+
+        jobrunner_output_filename = "/tmp/jobrunner_{0}.output.json".format(pid)
 
         jobrunner_config = {'func_bucket' : s3_bucket,
                             'func_key' : func_key,
@@ -299,17 +303,15 @@ def generic_handler(event, context_dict, custom_handler_env=None):
                             'output_bucket' : s3_bucket,
                             'output_key' : output_key,
                             'stats_filename' : jobrunner_stats_filename,
-                            'host_submit_timestamp' : host_submit_timestamp}
+                            'host_submit_timestamp' : host_submit_timestamp,
+                            'output_filename' : jobrunner_output_filename,
+                            'pid': pid}
 
         with open(jobrunner_config_filename, 'w') as jobrunner_fid:
             json.dump(jobrunner_config, jobrunner_fid)
 
         if os.path.exists(jobrunner_stats_filename):
             os.remove(jobrunner_stats_filename)
-
-        cmdstr = "{} {} {}".format(conda_python_runtime,
-                                   jobrunner_path,
-                                   jobrunner_config_filename)
 
         setup_time = time.time()
         response_status['setup_time'] = setup_time - start_time
@@ -319,13 +321,22 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         if custom_handler_env is not None:
             local_env.update(custom_handler_env)
 
+        # with open('test.py', 'w') as f:
+        #     f.write('print("hello world"')
+
+
+
         local_env.update(extra_env)
 
-        local_env['PATH'] = "{}:{}".format(conda_python_path, local_env.get("PATH", ""))
+        # local_env['PATH'] = "{}:{}".format(conda_python_path, local_env.get("PATH", ""))
 
-        logger.debug("command str=%s", cmdstr)
+        # logger.debug("command str=%s", cmdstr)
         # This is copied from http://stackoverflow.com/a/17698359/4577954
         # reasons for setting process group: http://stackoverflow.com/a/4791612
+
+        cmdstr = "{} {} {}".format('/usr/bin/python3', jobrunner_path, jobrunner_config_filename)
+        # cmdstr = "/usr/bin/python3"
+        # logger.debug("command str=%s", cmdstr)
         process = subprocess.Popen(cmdstr, shell=True, env=local_env, bufsize=1,
                                    stdout=subprocess.PIPE, preexec_fn=os.setsid)
 
@@ -358,18 +369,37 @@ def generic_handler(event, context_dict, custom_handler_env=None):
                                 "Process executed for too long and was killed")
 
 
-        logger.info("command execution finished")
+        # logger.info("command execution finished")
 
-        if os.path.exists(JOBRUNNER_STATS_FILENAME):
-            with open(JOBRUNNER_STATS_FILENAME, 'r') as fid:
-                for l in fid.readlines():
-                    key, value = l.strip().split(" ")
-                    float_value = float(value)
-                    response_status[key] = float_value
+        # if os.path.exists(JOBRUNNER_STATS_FILENAME):
+        #     with open(JOBRUNNER_STATS_FILENAME, 'r') as fid:
+        #         for l in fid.readlines():
+        #             key, value = l.strip().split(" ")
+        #             float_value = float(value)
+        #             response_status[key] = float_value
+
+        # response_status.update({'result' : 'hello!',
+        #            'success' : True,
+        #            'sys.path' : sys.path,
+        #            'stats': {}})
+
+
+
+        if os.path.exists(jobrunner_output_filename):
+            import pickle
+            with open(jobrunner_output_filename, 'r') as f:
+                output = json.load(f)
+                print(output)
+                pickled_output = pickle.dumps(output)
+                boto3.client("s3").put_object(Body=pickled_output,
+                         Bucket=s3_bucket,
+                         Key=output_key)
 
         end_time = time.time()
 
         response_status['stdout'] = stdout.decode("ascii")
+
+        logger.info(response_status['stdout'])
 
 
         response_status['exec_time'] = time.time() - setup_time
@@ -379,12 +409,24 @@ def generic_handler(event, context_dict, custom_handler_env=None):
         response_status['server_info'] = get_server_info()
 
         response_status.update(context_dict)
+
+        # import pickle
+
+        # pickled_output = pickle.dumps(response_status)
+
+        # boto3.client("s3").put_object(Body=pickled_output,
+        #                  Bucket=s3_bucket,
+        #                  Key=output_key)
+
     except Exception as e:
         # internal runtime exceptions
         response_status['exception'] = str(e)
         response_status['exception_args'] = e.args
         response_status['exception_traceback'] = traceback.format_exc()
+        print(e)
+        raise e
     finally:
+        # pass
         if event.get('status') != 'warm':
             # creating new client in case the client has not been created
             boto3.client("s3").put_object(Bucket=s3_bucket, Key=status_key,

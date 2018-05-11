@@ -151,6 +151,7 @@ class ResponseFuture(object):
 
         if call_status['exception'] is not None:
             # the wrenhandler had an exception
+            self._set_state(JobState.error)
             exception_str = call_status['exception']
 
             exception_args = call_status['exception_args']
@@ -159,17 +160,15 @@ class ResponseFuture(object):
                     raise Exception("Pywren version mismatch: remote " + \
                         "expected version {}, local library is version {}".format(
                             exception_args[2], exception_args[3]))
-                return None
             elif exception_args[0] == "OUTATIME":
                 if throw_except:
                     raise Exception("process ran out of time")
-                return None
             else:
                 if throw_except:
                     if 'exception_traceback' in call_status:
                         logger.error(call_status['exception_traceback'])
                     raise Exception(exception_str, *exception_args)
-                return None
+            return None
 
         call_output_time = time.time()
         call_invoker_result = pickle.loads(storage_handler.get_call_output(
@@ -191,11 +190,18 @@ class ResponseFuture(object):
         if call_success:
             self._return_val = call_invoker_result['result']
 
-            submit_ts = self._invoke_metadata['host_submit_timestamp']
+            # print(call_status)
+            print('done with this')
+
+            # submit_ts = self._invoke_metadata['host_submit_timestamp']
+            submit_ts = call_status['host_submit_timestamp_2']
             start_ts = call_status['start_timestamp']
             setup_ts = call_status['setup_timestamp']
             done_ts = self._invoke_metadata['done_timestamp']
-            self.timestamps = [submit_ts, start_ts, setup_ts, done_ts]
+            end_ts = call_status['end_time']
+            self.timestamps = [submit_ts, start_ts, setup_ts, done_ts, end_ts]
+
+            # print('done!')
 
             self._set_state(JobState.success)
             return self._return_val

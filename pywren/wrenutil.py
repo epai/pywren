@@ -21,6 +21,17 @@ import uuid
 import struct
 
 
+from contextlib import contextmanager
+import time
+
+@contextmanager
+def timeit(message):
+    start = time.time()
+    yield
+    end = time.time()
+    print('{}: {}s'.format(message, round(end - start, 2)))
+
+
 def uuid_str():
     return str(uuid.uuid4())
 

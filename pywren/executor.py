@@ -20,7 +20,8 @@ from __future__ import print_function
 import logging
 import random
 import time
-from multiprocessing.pool import ThreadPool
+from multiprocessing.pool import ThreadPool as Pool
+# from pathos.multiprocessing import ProcessPool as Pool
 from six.moves import cPickle as pickle
 
 import boto3
@@ -39,6 +40,16 @@ from pywren.wait import wait, ALL_COMPLETED
 
 
 logger = logging.getLogger(__name__)
+
+from contextlib import contextmanager
+
+@contextmanager
+def timeit(title):
+    start = time.time()
+    yield
+    end = time.time()
+    # print('{}: {}s'.format(title, round(end - start, 2)))
+
 
 
 """
@@ -78,19 +89,22 @@ class Executor(object):
                          status_key,
                          callset_id, call_id, extra_env,
                          extra_meta, data_byte_range, use_cached_runtime,
-                         host_job_meta, job_max_runtime,
+                         host_job_meta, job_max_runtime, pool,
                          overwrite_invoke_args=None, chunked=False):
 
         # Pick a runtime url if we have shards.
         # If not the handler will construct it
-        runtime_url = ""
-        if ('urls' in self.runtime_meta_info and
-                isinstance(self.runtime_meta_info['urls'], list) and
-                len(self.runtime_meta_info['urls']) >= 1):
-            num_shards = len(self.runtime_meta_info['urls'])
-            logger.debug("Runtime is sharded, choosing from {} copies.".format(num_shards))
-            random.seed()
-            runtime_url = random.choice(self.runtime_meta_info['urls'])
+
+        with timeit('runtime'):
+            runtime_url = ""
+            if ('urls' in self.runtime_meta_info and
+                    isinstance(self.runtime_meta_info['urls'], list) and
+                    len(self.runtime_meta_info['urls']) >= 1):
+                num_shards = len(self.runtime_meta_info['urls'])
+                logger.debug("Runtime is sharded, choosing from {} copies.".format(num_shards))
+                random.seed()
+                runtime_url = random.choice(self.runtime_meta_info['urls'])
+
 
         arg_dict = {
             'storage_config' : self.storage.get_storage_config(),
@@ -125,11 +139,17 @@ class Executor(object):
         lambda_invoke_time_start = time.time()
 
         # overwrite explicit args, mostly used for testing via injection
-        if overwrite_invoke_args is not None:
-            arg_dict.update(overwrite_invoke_args)
+        # if overwrite_invoke_args is not None:
+        # arg_dict.update(overwrite_invoke_args)
 
         # do the invocation
+
+        # with timeit('invoke'):
+        #     pool.apply_async(self.invoker.invoke, (arg_dict,))
+
         self.invoker.invoke(arg_dict)
+
+        # self.invoker.invoke(arg_dict)
 
         host_job_meta['lambda_invoke_timestamp'] = lambda_invoke_time_start
         host_job_meta['lambda_invoke_time'] = time.time() - lambda_invoke_time_start
@@ -164,7 +184,7 @@ class Executor(object):
         return b"".join(data_strs), ranges
 
     def map(self, func, iterdata, extra_env=None, extra_meta=None,
-            invoke_pool_threads=64, data_all_as_one=False,
+            invoke_pool_threads=64, data_all_as_one=True,
             use_cached_runtime=True, overwrite_invoke_args=None,
             exclude_modules=None, chunk_size=1):
         """
@@ -196,7 +216,6 @@ class Executor(object):
 
         host_job_meta = {}
 
-        pool = ThreadPool(invoke_pool_threads)
         callset_id = wrenutil.create_callset_id()
 
         ### pickle func and all data (to capture module dependencies
@@ -240,9 +259,25 @@ class Executor(object):
         self.storage.put_func(func_key, func_module_str)
         host_job_meta['func_upload_time'] = time.time() - func_upload_time
         host_job_meta['func_upload_timestamp'] = time.time()
-        def invoke(data_strs, callset_id, call_id, func_key,
-                   host_job_meta,
-                   agg_data_key=None, data_byte_range=None):
+
+        host_job_meta2 = host_job_meta
+
+        pool = Pool(invoke_pool_threads)
+
+        def invoke(i):
+            host_job_meta = host_job_meta2.copy()
+            # print('invoked {}'.foram)
+
+            call_id = "{:05d}".format(i)
+
+            data_byte_range = None
+            if agg_data_key is not None:
+                data_byte_range = agg_data_ranges[i]
+
+            chunk_strs = data_strs[i: i+chunk_size]
+            chunked = agg_data_key is None and chunk_size > 1
+
+            # print('invoked! {}'.format(time.time() % 1000))
             data_key, output_key, status_key \
                 = storage_utils.create_keys(self.storage.prefix, callset_id, call_id)
 
@@ -250,17 +285,16 @@ class Executor(object):
 
             if agg_data_key is None:
                 data_upload_time = time.time()
-                self.put_data(data_key, b'|||'.join(data_strs),
-                              callset_id, call_id)
+                with timeit('data'):
+                    self.put_data(data_key, b'|||'.join(chunk_strs),
+                                  callset_id, call_id)
                 data_upload_time = time.time() - data_upload_time
                 host_job_meta['data_upload_time'] = data_upload_time
                 host_job_meta['data_upload_timestamp'] = time.time()
 
                 data_key = data_key
-                chunked = True
             else:
                 data_key = agg_data_key
-                chunked = False
 
             return self.invoke_with_keys(func_key, data_key,
                                          output_key,
@@ -268,39 +302,32 @@ class Executor(object):
                                          callset_id, call_id, extra_env,
                                          extra_meta, data_byte_range,
                                          use_cached_runtime, host_job_meta.copy(),
-                                         self.job_max_runtime,
+                                         self.job_max_runtime, pool,
                                          overwrite_invoke_args=overwrite_invoke_args,
                                          chunked=chunked)
 
         N = len(data)
-        call_result_objs = []
 
         if not agg_data_key and chunk_size > 1:
             num_iters = range(0, N, chunk_size)
         else:
             num_iters = range(N)
 
-        for i in num_iters:
-            call_id = "{:05d}".format(i)
+        # for i in num_iters:
+            # cb = pool.apply_async(invoke, (i,))
+            # logger.info("map {} {} apply async".format(callset_id, call_id))
+            # call_result_objs.append(cb)
 
-            data_byte_range = None
-            if agg_data_key is not None:
-                data_byte_range = agg_data_ranges[i]
+        # res = [c.get() for c in call_result_objs]
+        # with Pool(invoke_pool_threads) as pool:
+        res = [invoke(i) for i in num_iters]
 
-            cb = pool.apply_async(invoke, (data_strs[i: i+chunk_size], callset_id,
-                                           call_id, func_key,
-                                           host_job_meta.copy(),
-                                           agg_data_key,
-                                           data_byte_range))
+        self.invoker.flush()
 
-            logger.info("map {} {} apply async".format(callset_id, call_id))
-
-            call_result_objs.append(cb)
-
-        res = [c.get() for c in call_result_objs]
         pool.close()
         pool.join()
-        logger.info("map invoked {} {} pool join".format(callset_id, call_id))
+
+        # logger.info("map invoked {} {} pool join".format(callset_id, call_id))
 
         # FIXME take advantage of the callset to return a lot of these
 

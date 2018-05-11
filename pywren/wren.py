@@ -25,6 +25,8 @@ import pywren.wrenconfig as wrenconfig
 from pywren.executor import Executor
 from pywren.wait import wait, ALL_COMPLETED, ANY_COMPLETED # pylint: disable=unused-import
 
+from multiprocessing.pool import ThreadPool as Pool
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +96,10 @@ def remote_executor(config=None, job_max_runtime=3600):
 standalone_executor = remote_executor
 
 
+def get_result(f):
+    print('getting result!')
+    return f.result()
+
 def get_all_results(fs):
     """
     Take in a list of futures and block until they are completed.
@@ -109,12 +115,21 @@ def get_all_results(fs):
       >>> futures = pwex.map(foo, data)
       >>> results = get_all_results(futures)
     """
-    wait(fs, return_when=ALL_COMPLETED)
+    print(len(fs))
+    fs, _ = wait(fs, return_when=ALL_COMPLETED)
+    print('done!')
     results = []
-    for f in fs:
-        result = f.result()
-        if f.chunked:
-            results.extend(result)
-        else:
-            results.append(result)
-    return results
+    # get_result = lambda f: f.result()
+
+    # with Pool(64) as pool:
+    #     return list(pool.imap_unordered(get_result, fs))
+    from collections import Counter
+    return fs, [f._return_val for f in fs]
+
+    # for i, f in enumerate(fs):
+    #     result = f.result()
+    #     if f.chunked:
+    #         results.extend(result)
+    #     else:
+    #         results.append(result)
+    # return results
